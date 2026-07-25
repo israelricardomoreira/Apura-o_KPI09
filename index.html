@@ -168,9 +168,9 @@
     <div class="params">
       <div class="grid">
         <div class="field calc">
-          <label>Jornada mensal prevista (horas)</label>
-          <input type="number" id="jornada" step="1" min="1">
-          <div class="hint" id="jornadaHint">Calculada do próprio relatório (mediana das horas previstas). Edite só se tiver base contratual diferente.</div>
+          <label>Jornada mensal — sobrepor (horas, opcional)</label>
+          <input type="number" id="jornada" step="1" min="1" placeholder="deixe vazio = cada mês usa a sua">
+          <div class="hint" id="jornadaHint">Vazio: cada mês usa a mediana da jornada do próprio relatório (44h/sem ≈ 176h). Preencha só para fixar um valor único em todos os meses.</div>
         </div>
         <div class="field">
           <label>Licença maternidade / afastamento legal</label>
@@ -248,7 +248,7 @@
     <div class="foot-note">
       <span class="tit">Metodologia declarada</span>
       <b>Absenteísmo gerenciável</b>, medido em horas: Atestado médico + Outros Atestados + Faltas abonadas,
-      sobre a jornada prevista do mês (headcount × jornada mediana do relatório).
+      sobre a jornada prevista do mês (headcount × mediana da jornada daquele mês, tirada do próprio relatório — cada mês usa a sua).
       <b>Férias, home office, repouso e feriado</b> não são ausência. <span id="matNote"></span><br>
       <b>Pico do mês:</b> ausência ≥ limiar de horas numa única competência (padrão 28h ≈ 3,5 dias, ~0,6% de impacto — base estatística dos dados). <b>Recorrência:</b> mesma pessoa com atestado em ≥ 3 meses do período — sinal que a literatura de RH considera mais relevante que o pico isolado. Ambos são para leitura do gestor, não juízo sobre o colaborador.
     </div>
@@ -341,7 +341,7 @@ function jornadaPrevista(funcs){
   const vals=Object.values(funcs).map(f=>CAT_JORNADA.reduce((s,e)=>s+(f.ev[e]||0),0));
   return Math.round(median(vals));
 }
-function apurar(funcs,cfg){
+function apurar(funcs,cfg,jornadaMes){
   const headcount=Object.keys(funcs).length;
   let hAus=0,hLeg=0;const detalhe=[];const licencas=[];
   for(const mat in funcs){
@@ -357,12 +357,13 @@ function apurar(funcs,cfg){
     if(hl>0)licencas.push({mat,nome:funcs[mat].nome,h:Math.round(hl*100)/100,comp:compLeg});
     hAus+=h;hLeg+=hl;
   }
-  const prev=headcount*cfg.jornada;
+  const jornada = (cfg.jornadaOverride && cfg.jornadaOverride>0) ? cfg.jornadaOverride : jornadaMes;
+  const prev=headcount*jornada;
   const abs=prev?hAus/prev:0;
   detalhe.sort((a,b)=>b.h-a.h);
   // outliers: impacto individual no absenteísmo (horas / jornada do quadro) — robusto ao nº de ausentes
   const outliers=detalhe.filter(d=> d.h>=cfg.limOutH );
-  return {headcount,hAus:Math.round(hAus*100)/100,hLeg:Math.round(hLeg*100)/100,prev,abs,detalhe,outliers,licencas};
+  return {headcount,jornada,hAus:Math.round(hAus*100)/100,hLeg:Math.round(hLeg*100)/100,prev,abs,detalhe,outliers,licencas};
 }
 
 const $=id=>document.getElementById(id);
@@ -402,11 +403,10 @@ function renderFiles(){
   $("actions").style.display=has?"flex":"none";
   $("calc").disabled=!has;
   $("limpar").style.display=has?"inline-block":"none";
-  // jornada sugerida = mediana das jornadas dos arquivos
-  if(has && !$("jornada").dataset.touched){
-    const med=Math.round(median(arquivos.map(a=>a.jornada)));
-    $("jornada").value=med;
-    $("jornadaHint").textContent=`Calculada dos relatórios (mediana ${med}h). Edite só se a base contratual for outra.`;
+  // informa a jornada detectada por mês, sem forçar valor no campo (vazio = por mês)
+  if(has){
+    const info=arquivos.map(a=>`${a.comp||"?"}: ${a.jornada}h`).join(" · ");
+    $("jornadaHint").textContent=`Detectado por mês → ${info}. Vazio = usa cada uma. Preencha só para fixar valor único.`;
   }
 }
 $("jornada").addEventListener("input",()=>{$("jornada").dataset.touched="1";});
@@ -414,13 +414,13 @@ $("limpar").onclick=()=>{arquivos=[];ultima=[];renderFiles();$("result").classLi
   ["imprimir","exportar"].forEach(id=>$(id).style.display="none");$("jornada").dataset.touched="";$("inp").value="";};
 
 $("calc").onclick=()=>{
-  const cfg={jornada:parseFloat($("jornada").value)||176,maternidade:$("maternidade").value,
+  const cfg={jornadaOverride:parseFloat($("jornada").value)||0,maternidade:$("maternidade").value,
     metaAbs:parseFloat($("metaAbs").value)/100,limOutH:parseFloat($("limOutH").value)||28,recMeses:parseInt($("recMeses").value)||3};
   // pico definido em HORAS; guardamos também para exibição
   const ordem=c=>{const[mm,aa]=(c||"").split("/");return(parseInt(aa)||0)*100+(MESES.indexOf((mm||"").slice(0,3))+1);};
   arquivos.sort((a,b)=>ordem(a.comp)-ordem(b.comp));
 
-  ultima=arquivos.map(a=>({comp:a.comp,...apurar(a.funcs,cfg),cfg}));
+  ultima=arquivos.map(a=>({comp:a.comp,...apurar(a.funcs,cfg,a.jornada),cfg}));
 
   // RECORRÊNCIA: cruza os meses carregados por matrícula
   const histAtest={};
@@ -444,7 +444,7 @@ $("calc").onclick=()=>{
     const temOut=a.outliers.length>0;
     tb.insertAdjacentHTML("beforeend",
       `<tr class="${temOut?'outlier-row':''}">
-        <td>${a.comp||"⚠"}</td><td>${a.headcount}</td><td>${cfg.jornada}h</td>
+        <td>${a.comp||"⚠"}</td><td>${a.headcount}</td><td>${a.jornada}h</td>
         <td>${a.hAus.toFixed(2)}</td>
         <td><span class="badge ${ok?'b-ok':'b-er'}">${absPct}</span></td>
         <td><span class="badge ${ok?'b-ok':'b-er'}">${ok?'dentro':'acima'}</span></td>
@@ -464,7 +464,7 @@ $("calc").onclick=()=>{
     <div class="card"><div class="lbl">Picos do mês</div><div class="val ${nOut?'er':'ok'}">${nOut}</div><div class="foot">≥ ${cfg.limOutH}h numa competência</div></div>
     <div class="card"><div class="lbl">Recorrentes</div><div class="val ${nRec?'er':'ok'}">${nRec}</div><div class="foot">≥ ${cfg.recMeses} meses com atestado</div></div>`;
 
-  $("resultSub").textContent=`${ultima.length} competência(s) · gerado em ${new Date().toLocaleDateString("pt-BR")} · jornada ${cfg.jornada}h/mês`;
+  $("resultSub").textContent=`${ultima.length} competência(s) · gerado em ${new Date().toLocaleDateString("pt-BR")} · jornada ${cfg.jornadaOverride?cfg.jornadaOverride+"h (fixa)":"por mês (mediana do relatório)"}`;
   $("matNote").textContent = cfg.maternidade==="incluir"
     ? "Licença maternidade INCLUÍDA no indicador nesta apuração."
     : "Licença maternidade e afastamentos legais rastreados à parte, fora da meta.";
@@ -591,9 +591,9 @@ $("imprimir").onclick=()=>window.print();
 $("exportar").onclick=()=>{
   const cfg=ultima[0].cfg;
   const rows=[["CRCO — Relatório Gerencial · KPI-09 Absenteísmo"],
-    ["NBR 15906:2021 item 7.2.4.5 · gerado em "+new Date().toLocaleString("pt-BR")+" · jornada "+cfg.jornada+"h"],[],
+    ["NBR 15906:2021 item 7.2.4.5 · gerado em "+new Date().toLocaleString("pt-BR")+" · jornada "+(cfg.jornadaOverride?cfg.jornadaOverride+"h fixa":"por mês (mediana)")],[],
     ["Competência","Headcount","Jornada prev. (h)","Horas ausência","Absenteísmo %","Situação vs meta","Afast. legal (h)"]];
-  ultima.forEach(a=>rows.push([a.comp,a.headcount,cfg.jornada,a.hAus,(a.abs*100).toFixed(2)+"%",a.abs<=cfg.metaAbs?"Dentro":"Acima",a.hLeg||0]));
+  ultima.forEach(a=>rows.push([a.comp,a.headcount,a.jornada,a.hAus,(a.abs*100).toFixed(2)+"%",a.abs<=cfg.metaAbs?"Dentro":"Acima",a.hLeg||0]));
   rows.push([]);
   if(ultima.some(a=>a.outliers.length)){
     rows.push(["PICOS DO MÊS — ausência ≥ "+cfg.limOutH+"h numa competência"]);
